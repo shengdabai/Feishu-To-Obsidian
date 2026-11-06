@@ -1,0 +1,19 @@
+{
+  "name": "feishu-lark-to-obsidian",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Export Feishu/Lark documents to Markdown for Obsidian with browser and batch workflows.",
+  "scripts": {
+    "start": "node src/index.mjs",
+    "export": "node src/index.mjs",
+    "install:browser": "npx playwright install chromium",
+    "test": "node --test tests/*.test.mjs",
+    "lint": "node --check src/index.mjs && node --check src/export-paths.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.53.0",
+    "turndown": "^7.2.0",
+    "turndown-plugin-gfm": "^1.0.2"
+  }
+}
