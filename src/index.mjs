@@ -9,6 +9,7 @@ import { chromium } from "playwright";
 import TurndownService from "turndown";
 import { gfm } from "turndown-plugin-gfm";
 import { documentFileBase } from "./export-paths.mjs";
+import { expandVisibleControls, parseDocumentLinks, validateDocumentUrl } from "./page-safety.mjs";
 
 const CURRENT_FILE = fileURLToPath(import.meta.url);
 const PROJECT_DIR = path.resolve(path.dirname(CURRENT_FILE), "..");
@@ -78,16 +79,7 @@ async function readLinks() {
     );
   }
 
-  const links = raw
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith("#"));
-
-  if (links.length === 0) {
-    throw new Error(`links.txt 里还没有有效链接。`);
-  }
-
-  return [...new Set(links)];
+  return parseDocumentLinks(raw);
 }
 
 function isCheckMode() {
@@ -193,48 +185,8 @@ async function waitForUserToLogin() {
 }
 
 async function clickExpandableElements(page) {
-  await page.evaluate((labels) => {
-    const textMatches = new Set(labels);
-    const selectors = [
-      "button",
-      "[role='button']",
-      "span",
-      "a",
-      "div"
-    ];
-
-    const isVisible = (element) => {
-      const style = window.getComputedStyle(element);
-      const rect = element.getBoundingClientRect();
-      return (
-        style &&
-        style.visibility !== "hidden" &&
-        style.display !== "none" &&
-        rect.width > 0 &&
-        rect.height > 0
-      );
-    };
-
-    for (let round = 0; round < 5; round += 1) {
-      let clickedAny = false;
-      for (const selector of selectors) {
-        const elements = Array.from(document.querySelectorAll(selector));
-        for (const element of elements) {
-          const text = (element.textContent || "").trim();
-          if (!text || !isVisible(element)) {
-            continue;
-          }
-          if ([...textMatches].some((label) => text === label || text.includes(label))) {
-            element.click();
-            clickedAny = true;
-          }
-        }
-      }
-      if (!clickedAny) {
-        break;
-      }
-    }
-  }, EXPAND_LABELS);
+  validateDocumentUrl(page.url());
+  await page.evaluate(expandVisibleControls, EXPAND_LABELS);
 }
 
 async function autoScroll(page) {
@@ -387,12 +339,14 @@ async function collectFeishuScrollText(page) {
 }
 
 async function extractPageContent(page, url) {
-  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 120000 });
+  await page.goto(validateDocumentUrl(url), { waitUntil: "domcontentloaded", timeout: 120000 });
+  validateDocumentUrl(page.url());
   await page.waitForTimeout(2500);
   await clickExpandableElements(page);
   await autoScroll(page);
   const scrollCollected = await collectFeishuScrollText(page);
 
+  validateDocumentUrl(page.url());
   const extracted = await page.evaluate(() => {
     const isVisible = (element) => {
       const style = window.getComputedStyle(element);
@@ -547,8 +501,8 @@ async function exportOne(page, url, index, total) {
 }
 
 async function main() {
-  await ensureDirectories();
   const links = await readLinks();
+  await ensureDirectories();
 
   log(`读取到 ${links.length} 个链接。`);
 
@@ -562,9 +516,8 @@ async function main() {
     viewport: { width: 1440, height: 960 }
   });
 
-  const page = context.pages()[0] || (await context.newPage());
-
   try {
+    const page = context.pages()[0] || (await context.newPage());
     log("浏览器已启动。");
     await waitForUserToLogin();
 
@@ -589,6 +542,7 @@ async function main() {
 
     const manifestPath = path.join(OUTPUT_DIR, "manifest.json");
     await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+    if (manifest.some((entry) => entry.status === "failed")) process.exitCode = 1;
     log(`全部完成，结果清单已写入 ${manifestPath}`);
   } finally {
     await context.close();

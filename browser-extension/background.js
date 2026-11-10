@@ -11,11 +11,11 @@ chrome.action.onClicked.addListener(async (tab) => {
     return;
   }
 
-  await setBusy(tabId);
-
   try {
+    await setBusy(tabId);
     const url = new URL(tab.url || "");
-    if (!SUPPORTED_HOST_PATTERNS.some((pattern) => pattern.test(url.hostname))) {
+    if (url.protocol !== "https:" || url.username || url.password || url.port ||
+        !SUPPORTED_HOST_PATTERNS.some((pattern) => pattern.test(url.hostname))) {
       throw new Error("请先打开飞书文档或知识库页面，再点击插件按钮。");
     }
 
@@ -39,7 +39,11 @@ chrome.action.onClicked.addListener(async (tab) => {
     await setSuccess(tabId, `已下载到 Downloads/${DOWNLOAD_DIR}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await setError(tabId, message);
+    try {
+      await setError(tabId, message);
+    } catch {
+      // The tab may have closed while extraction or badge updates were in progress.
+    }
   }
 });
 
@@ -269,41 +273,20 @@ async function extractFeishuPage() {
   };
 
   const clickExpandableElements = async () => {
-    const selectors = ["button", "[role='button']", "span", "a", "div"];
-
-    const isVisible = (element) => {
+    const allowedLabels = new Set(EXPAND_LABELS);
+    const selector = "button, [role='button'], summary, span, div";
+    for (const element of document.querySelectorAll(selector)) {
+      const text = cleanLine(element.textContent || "");
+      if (!allowedLabels.has(text) || element.closest("a, form, [contenteditable]:not([contenteditable='false'])")) continue;
+      if (element.tagName === "BUTTON" && element.form) continue;
+      const control = element.closest("button, [role='button'], summary");
+      if (control && control !== element) continue;
+      if (element.querySelector("button, [role='button'], summary, a, input, select, textarea")) continue;
       const style = window.getComputedStyle(element);
       const rect = element.getBoundingClientRect();
-      return (
-        style.visibility !== "hidden" &&
-        style.display !== "none" &&
-        rect.width > 0 &&
-        rect.height > 0
-      );
-    };
-
-    for (let round = 0; round < 5; round += 1) {
-      let clickedAny = false;
-
-      for (const selector of selectors) {
-        const elements = Array.from(document.querySelectorAll(selector));
-        for (const element of elements) {
-          const text = cleanLine(element.textContent || "");
-          if (!text || !isVisible(element)) {
-            continue;
-          }
-          if (EXPAND_LABELS.some((label) => text === label || text.includes(label))) {
-            element.click();
-            clickedAny = true;
-          }
-        }
+      if (style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0) {
+        element.click();
       }
-
-      if (!clickedAny) {
-        break;
-      }
-
-      await wait(250);
     }
   };
 
@@ -452,6 +435,12 @@ async function extractFeishuPage() {
   };
 
   try {
+    // Recheck the injected page: the tab can navigate between the click and injection.
+    const url = new URL(location.href);
+    if (url.protocol !== "https:" || url.username || url.password || url.port ||
+        !/\.(?:feishu\.cn|larksuite\.com)$/i.test(url.hostname)) {
+      throw new Error("请先打开 HTTPS 飞书/Lark 文档或知识库页面。");
+    }
     await wait(1800);
     await clickExpandableElements();
     await scrollWindow();
