@@ -7,26 +7,59 @@ const source = await fs.readFile(new URL('../browser-extension/background.js', i
 
 function extension() {
   const downloads = [];
+  const injections = [];
   let onClick;
   const context = vm.createContext({
     TextEncoder, btoa, setTimeout: () => 0,
     chrome: {
       action: {
         onClicked: { addListener: fn => { onClick = fn; } },
-        setBadgeBackgroundColor: async () => {},
+        setBadgeBackgroundColor: async () => { if (context.failBadges) throw new Error('Tab closed'); },
         setBadgeText: async () => {},
         setTitle: async () => {},
       },
-      scripting: { executeScript: async () => [{ result: {
+      scripting: { executeScript: async options => { injections.push(options); return [{ result: {
         success: true, title: context.fixtureTitle, markdown: '# Fixture 😀', rawText: 'Fixture 中文',
-      } }] },
+      } }]; } },
       downloads: { download: async options => { downloads.push(options); } },
     },
     URL,
   });
   vm.runInContext(source, context);
-  return { context, downloads, onClick };
+  return { context, downloads, injections, onClick };
 }
+
+test('extension rejects unsupported protocols, credentials, ports and deceptive hosts before injection', async () => {
+  for (const url of ['http://example.feishu.cn/a', 'file:///tmp/private',
+    'https://example.feishu.cn.attacker.test/a', 'https://u:p@example.feishu.cn/a',
+    'https://example.feishu.cn:8443/a']) {
+    const { downloads, injections, onClick } = extension();
+    await onClick({ id: 1, url });
+    assert.equal(injections.length, 0);
+    assert.equal(downloads.length, 0);
+  }
+});
+
+test('injected extractor rechecks the actual origin after a tab navigation race', async () => {
+  const { context } = extension();
+  context.location = { href: 'https://attacker.test/a' };
+  const result = await vm.runInContext('extractFeishuPage()', context);
+  assert.equal(result.success, false);
+  assert.match(result.error, /HTTPS/);
+});
+
+test('a closed tab during badge updates does not reject the click handler', async () => {
+  const { context, downloads, onClick } = extension();
+  context.failBadges = true;
+  await assert.doesNotReject(() => onClick({ id: 1, url: 'https://example.feishu.cn/a' }));
+  assert.equal(downloads.length, 0);
+});
+
+test('extension needs only user-activated access to the current tab', async () => {
+  const manifest = JSON.parse(await fs.readFile(new URL('../browser-extension/manifest.json', import.meta.url)));
+  assert.deepEqual(manifest.permissions, ['activeTab', 'downloads', 'scripting']);
+  assert.equal(manifest.host_permissions, undefined);
+});
 
 test('extension download names preserve emoji and fit the filename byte limit', async () => {
   for (const title of ['a' + '😀'.repeat(80), '😀'.repeat(100), '文'.repeat(100)]) {

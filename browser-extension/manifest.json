@@ -8,10 +8,6 @@
     "downloads",
     "scripting"
   ],
-  "host_permissions": [
-    "https://*.feishu.cn/*",
-    "https://*.larksuite.com/*"
-  ],
   "background": {
     "service_worker": "background.js"
   },
